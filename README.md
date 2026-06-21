@@ -1,9 +1,5 @@
 # Handwriting to LaTeX for Obsidian
 
-![Obsidian Plugin](https://img.shields.io/badge/Obsidian-Plugin-purple)
-![Version](https://img.shields.io/github/v/release/yourusername/obsidian-handwriting-latex)
-![Downloads](https://img.shields.io/github/downloads/yourusername/obsidian-handwriting-latex/total)
-
 **Handwriting to LaTeX** is an Obsidian plugin that lets you draw mathematical formulas directly on a canvas, or import images from your gallery, and convert them into LaTeX code using optical character recognition (OCR). It supports multiple API backends, with **SimpleTex** as the recommended (and free) option.
 
 ---
@@ -23,6 +19,21 @@
 - 🎨 **Customizable** – stroke color/width, grid, default canvas size.
 
 ---
+
+## Sample images
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><b>Handwriting Recognition</b><br><img src="images/手写公式识别.jpg" width="200"></td>
+      <td align="center"><b>Image Recognition</b><br><img src="images/图片公式识别.jpg" width="200"></td>
+      <td align="center"><b>Inserted Result</b><br><img src="images/插入公式.jpg" width="200"></td>
+    </tr>
+  </table>
+</div>
+
+---
+
 
 ## 📦 Installation
 
