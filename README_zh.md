@@ -18,6 +18,19 @@
 - 📝 **智能插入** – 识别结果可插入为行内公式（`$...$`）、行间公式（`$$...$$`）或纯 LaTeX 源码。
 
 ---
+## 示例图
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><b>手写识别</b><br><img src="images/手写公式识别.jpg" width="200"></td>
+      <td align="center"><b>图片识别</b><br><img src="images/图片公式识别.jpg" width="200"></td>
+      <td align="center"><b>插入效果</b><br><img src="images/插入公式.jpg" width="200"></td>
+    </tr>
+  </table>
+</div>
+
+---
 
 ## 🚀 安装方式
 
