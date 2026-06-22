@@ -1,6 +1,6 @@
 {
   "id": "handwriting-latex",
-  "name": "Handwriting & Image to LaTeX",
+  "name": "Handwriting and Image to LaTeX",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
   "description": "Draw math formulas by hand or import from album, then convert them to LaTeX using AI APIs (SimpleTex / Custom).",
