@@ -32,17 +32,17 @@
 
 ## 🚀 安装方式
 
-### 通过 Obsidian 社区插件（待上架）
+### 通过 Obsidian 社区插件
 正式上架后，可直接在社区插件市场中搜索安装。
 
 ### 通过 BRAT 安装（推荐）
 1. 在 Obsidian 中安装 [BRAT 插件](https://obsidian.md/plugins?id=obsidian42-brat)。
 2. 打开 BRAT 设置，点击 **"Add Beta Plugin"**。
-3. 输入本仓库地址：`https://github.com/yourname/handwriting-latex`
+3. 输入本仓库地址：`https://github.com/ChongCyrus/handwriting-latex`
 4. 点击 **"Add Plugin"**，插件会自动下载并启用。
 
 ### 手动安装
-1. 从 [Releases 页面](https://github.com/yourname/handwriting-latex/releases) 下载最新 `release.zip`。
+1. 从 [Releases 页面](https://github.com/ChongCyrus/handwriting-latex/releases) 下载最新 `release.zip`。
 2. 解压到你的笔记库目录下的 `.obsidian/plugins/` 文件夹中。
 3. 重启 Obsidian，在 **设置 → 社区插件** 中启用本插件。
 
