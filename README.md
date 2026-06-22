@@ -1,6 +1,6 @@
 # Handwriting and Image to LaTeX
 
-**Handwriting to LaTeX** is an Obsidian plugin that lets you draw mathematical formulas directly on a canvas, or import images from your gallery, and convert them into LaTeX code using optical character recognition (OCR). It supports multiple API backends, with **SimpleTex** as the recommended (and free) option.
+**Handwriting and Image to LaTeX** is an Obsidian plugin that lets you draw mathematical formulas directly on a canvas, or import images from your gallery, and convert them into LaTeX code using optical character recognition (OCR). It supports multiple API backends, with **SimpleTex** as the recommended (and free) option.
 
 ---
 
