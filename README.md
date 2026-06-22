@@ -45,7 +45,7 @@
 
 ### Manual (BRAT)
 1. Install the [BRAT](https://github.com/TfTHacker/obsidian-brat) plugin.
-2. Add this repository: `yourusername/obsidian-handwriting-latex`.
+2. Add this repository: `https://github.com/ChongCyrus/handwriting-latex`.
 3. Enable the plugin.
 
 ---
