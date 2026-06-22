@@ -37,7 +37,7 @@
 
 ## 📦 Installation
 
-### From Obsidian Community Plugins (once published)
+### From Obsidian Community Plugins
 1. Open **Settings** → **Community Plugins**.
 2. Disable **Safe Mode**.
 3. Click **Browse** and search for “Handwriting to LaTeX”.
