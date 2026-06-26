@@ -282,6 +282,21 @@
   border-bottom: none;
 }
 
+/* ==================== 全屏工具栏（移至 body 层级，保持在画布之上可见） ==================== */
+.toolbar-container.toolbar-fullscreen {
+  position: fixed;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 100001;
+  display: flex;
+  align-items: center;
+}
+
+.toolbar-container.toolbar-fullscreen .floating-toolbar {
+  max-height: 85vh;
+}
+
 .toolbar-btn {
   width: 44px;
   height: 44px;
@@ -726,6 +741,65 @@
   color: var(--text-muted);
 }
 
+/* ==================== 历史记录导航 ==================== */
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 0;
+  margin-top: -2px;
+  margin-bottom: 6px;
+}
+
+.history-nav-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.history-nav-btn:hover:not(.disabled) {
+  background: var(--background-modifier-hover);
+  transform: scale(1.05);
+}
+
+.history-nav-btn:active:not(.disabled) {
+  transform: scale(0.92);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.history-nav-btn.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  background: var(--background-primary-alt);
+}
+
+.history-counter {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 /* ==================== 移动端适配（核心） ==================== */
 @media (max-width: 768px) {
   .handwriting-header {
@@ -774,19 +848,36 @@
     z-index: 50;
     max-height: 36px;
     background: var(--background-primary);
+    transition: max-height 0.3s ease;
+    will-change: max-height;
   }
 
   .result-panel.expanded {
     max-height: 45vh;
   }
 
+  /* 用户拖拽后的高度由 JS 内联样式控制，优先级高于 CSS 类 */
+  .result-panel[style*="max-height"] {
+    /* 允许 JS 内联样式覆盖 */
+  }
+
   .result-handle {
     display: flex;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    cursor: grab;
+    position: relative;
+  }
+
+  .result-handle:active {
+    cursor: grabbing;
   }
 
   .result-content {
     padding: 12px;
     display: none;
+    overflow-y: auto;
   }
 
   .result-panel.expanded .result-content {
@@ -800,12 +891,16 @@
 
   .toolbar-container {
     left: 8px;
+    top: 8px;
+    bottom: 8px;
+    transform: none;
   }
 
   .floating-toolbar {
     padding: 6px;
     border-radius: 14px;
     gap: 4px;
+    max-height: 100%;
   }
 
   .toolbar-btn {
@@ -824,6 +919,18 @@
 
   .toolbar-container.collapsed .toolbar-toggle-btn {
     left: 0;
+  }
+
+  /* 全屏工具栏移动端定位（左上角） */
+  .toolbar-container.toolbar-fullscreen {
+    left: 8px;
+    top: 8px;
+    bottom: auto;
+    transform: none;
+  }
+
+  .toolbar-container.toolbar-fullscreen .floating-toolbar {
+    max-height: calc(100vh - 60px);
   }
 
   .resize-handle {
@@ -851,6 +958,22 @@
   .math-mode-btn {
     padding: 5px 10px;
     font-size: 12px;
+  }
+
+  .history-row {
+    gap: 8px;
+    padding: 4px 0;
+  }
+
+  .history-nav-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+  }
+
+  .history-counter {
+    font-size: 12px;
+    min-width: 36px;
   }
 
   /* 移动端裁剪器优化 */
