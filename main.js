@@ -14,24 +14,30 @@ const DEFAULT_SETTINGS = {
   customResponseField: "text",
   customApiKeyHeader: "X-API-Key",
   customImageFieldName: "image",
+  mathpixAppId: "",
+  openaiModel: "gpt-4o",
+  openaiDetail: "high",
+  maxHistorySize: 30,
 };
 
 class HandwritingLatexPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
+    this.history = [];
+    this.historyIndex = -1;
 
     this.addCommand({
       id: "open-handwriting-canvas",
       name: "Open handwriting canvas",
       editorCallback: (editor) => {
-        new HandwritingModal(this.app, this.settings, editor).open();
+        new HandwritingModal(this.app, this, this.settings, editor).open();
       },
     });
 
     this.addRibbonIcon("pencil", "Handwriting to LaTeX", () => {
       const activeView = this.app.workspace.getActiveViewOfType(require('obsidian').MarkdownView);
       if (activeView) {
-        new HandwritingModal(this.app, this.settings, activeView.editor).open();
+        new HandwritingModal(this.app, this, this.settings, activeView.editor).open();
       } else {
         new Notice("Please open a markdown file first");
       }
@@ -52,8 +58,9 @@ class HandwritingLatexPlugin extends Plugin {
 }
 
 class HandwritingModal extends Modal {
-  constructor(app, settings, editor) {
+  constructor(app, plugin, settings, editor) {
     super(app);
+    this.plugin = plugin;
     this.settings = settings;
     this.editor = editor;
     this.isDrawing = false;
@@ -91,6 +98,13 @@ class HandwritingModal extends Modal {
     this.cropperImageOffsetY = 0;
     this.cropperSelectionData = null;
     this.toolbarCollapsed = false;
+    this.savedToolbarParent = null;
+    this.savedToolbarNextSibling = null;
+
+    // 结果面板
+    this.resultExpanded = false;
+    this.resultUserHeight = null;
+    this.resultDragMoved = false;
   }
 
   onOpen() {
@@ -126,7 +140,11 @@ class HandwritingModal extends Modal {
     const canvasArea = body.createDiv({ cls: "canvas-area" });
 
     const canvasWrapper = canvasArea.createDiv({ cls: "canvas-wrapper" });
-    canvasWrapper.style.width = this.settings.canvasWidth + "px";
+    // Desktop: make canvas wrapper wider by computing available space
+    const desktopWidth = window.innerWidth > 768
+      ? Math.min(Math.max(800, (window.innerWidth - 420)), this.settings.canvasWidth)
+      : this.settings.canvasWidth;
+    canvasWrapper.style.width = desktopWidth + "px";
     canvasWrapper.style.height = this.settings.canvasHeight + "px";
     canvasWrapper.style.overflow = "hidden";
     canvasWrapper.style.position = "relative";
@@ -240,15 +258,41 @@ class HandwritingModal extends Modal {
     this.displayMathBtn.addEventListener("click", () => setMathMode("display"));
     this.rawMathBtn.addEventListener("click", () => setMathMode("raw"));
 
+    // 历史记录导航
+    const historyRow = resultContent.createDiv({ cls: "history-row" });
+    this.prevHistoryBtn = historyRow.createEl("button", {
+      text: "←",
+      cls: "history-nav-btn disabled",
+      attr: { "aria-label": "Previous result" }
+    });
+    this.prevHistoryBtn.addEventListener("click", () => this.navigateHistory(-1));
+
+    this.historyCounter = historyRow.createEl("span", {
+      text: "0/0",
+      cls: "history-counter"
+    });
+
+    this.nextHistoryBtn = historyRow.createEl("button", {
+      text: "→",
+      cls: "history-nav-btn disabled",
+      attr: { "aria-label": "Next result" }
+    });
+    this.nextHistoryBtn.addEventListener("click", () => this.navigateHistory(1));
+
     resultContent.createEl("h3", { text: "Preview:" });
     this.resultEl = resultContent.createDiv({ cls: "latex-preview" });
     this.resultEl.setText("(No result yet)");
 
-    let resultExpanded = false;
+    this.resultExpanded = false;
     resultHandle.addEventListener("click", () => {
-      resultExpanded = !resultExpanded;
-      resultPanel.toggleClass("expanded", resultExpanded);
+      if (resultHandle.hasAttribute("data-dragged")) {
+        resultHandle.removeAttribute("data-dragged");
+        return;
+      }
+      this.toggleResultPanel();
     });
+
+    this.bindResultPanelDrag(resultHandle, resultPanel);
 
     // 底部提示
     const footer = contentEl.createDiv({ cls: "handwriting-footer" });
@@ -329,6 +373,17 @@ class HandwritingModal extends Modal {
     this.bindCropperEvents();
 
     this.updateModeUI();
+    this.updateHistoryUI();
+
+    // 工具栏高度自适应：初始化 + ResizeObserver
+    this.syncToolbarHeight();
+    this._toolbarResizeObserver = new ResizeObserver(() => {
+      this.syncToolbarHeight();
+    });
+    const canvasWrapperEl = this.canvas?.parentElement;
+    if (canvasWrapperEl) {
+      this._toolbarResizeObserver.observe(canvasWrapperEl);
+    }
   }
 
   // ==================== 裁剪器视图控制 ====================
@@ -578,10 +633,12 @@ class HandwritingModal extends Modal {
   // ==================== 工具栏显隐切换 ====================
   toggleToolbar() {
     this.toolbarCollapsed = !this.toolbarCollapsed;
-    const container = this.contentEl.querySelector(".toolbar-container");
-    const toggleBtn = this.contentEl.querySelector(".toolbar-toggle-btn");
+    const container = this.contentEl.querySelector(".toolbar-container") || document.querySelector(".toolbar-container.toolbar-fullscreen");
+    const toggleBtn = container?.querySelector(".toolbar-toggle-btn");
     if (container) {
-      container.toggleClass("collapsed", this.toolbarCollapsed);
+      if (container.classList) {
+        container.classList.toggle("collapsed", this.toolbarCollapsed);
+      }
     }
     if (toggleBtn) {
       toggleBtn.textContent = this.toolbarCollapsed ? "▶" : "◀";
@@ -589,6 +646,19 @@ class HandwritingModal extends Modal {
     }
   }
 
+  // ==================== 工具栏高度自适应 ====================
+  syncToolbarHeight() {
+    const toolbar = this.contentEl.querySelector(".floating-toolbar") || document.querySelector(".toolbar-fullscreen .floating-toolbar");
+    if (!toolbar) return;
+    if (window.innerWidth <= 768) {
+      // 移动端：工具栏高度跟随画布或屏幕可视高度
+      const wrapper = this.canvas?.parentElement;
+      const refHeight = (wrapper && wrapper.clientHeight) ? wrapper.clientHeight : window.innerHeight;
+      toolbar.style.maxHeight = Math.max(200, refHeight - 16) + "px";
+    } else {
+      toolbar.style.maxHeight = "";
+    }
+  }
   // ==================== 模式切换 ====================
   setMode(mode) {
     this.mode = mode;
@@ -1166,6 +1236,21 @@ class HandwritingModal extends Modal {
     wrapper.style.width = "100vw"; wrapper.style.height = "100vh";
     wrapper.style.zIndex = "99999"; wrapper.style.backgroundColor = "white"; wrapper.style.overflow = "hidden";
 
+    // Move toolbar to document.body so it stays visible above fullscreen wrapper
+    const toolbarContainer = this.contentEl.querySelector(".toolbar-container");
+    if (toolbarContainer) {
+      this.savedToolbarParent = toolbarContainer.parentElement;
+      this.savedToolbarNextSibling = toolbarContainer.nextSibling;
+      toolbarContainer.classList.add("toolbar-fullscreen");
+      document.body.appendChild(toolbarContainer);
+      // Update toggle button arrow direction for fullscreen position
+      const toggleBtn = toolbarContainer.querySelector(".toolbar-toggle-btn");
+      if (toggleBtn && !this.toolbarCollapsed) {
+        toggleBtn.textContent = "◀";
+      }
+      this.syncToolbarHeight();
+    }
+
     const exitBtn = document.createElement("button");
     exitBtn.textContent = "Exit Fullscreen";
     exitBtn.className = "handwriting-fullscreen-exit";
@@ -1202,6 +1287,24 @@ class HandwritingModal extends Modal {
     if (this.fullscreenExitBtn) { this.fullscreenExitBtn.remove(); this.fullscreenExitBtn = null; }
     const resizeHandle = wrapper.querySelector(".resize-handle");
     if (resizeHandle) resizeHandle.style.display = "";
+
+    // Restore toolbar from body back to canvas-area
+    const toolbarContainer = document.querySelector(".toolbar-container.toolbar-fullscreen");
+    if (toolbarContainer && this.savedToolbarParent) {
+      toolbarContainer.classList.remove("toolbar-fullscreen");
+      if (this.savedToolbarNextSibling) {
+        this.savedToolbarParent.insertBefore(toolbarContainer, this.savedToolbarNextSibling);
+      } else {
+        this.savedToolbarParent.appendChild(toolbarContainer);
+      }
+      this.savedToolbarParent = null;
+      this.savedToolbarNextSibling = null;
+      if (this.toolbarCollapsed) {
+        toolbarContainer.classList.add("collapsed");
+      }
+      this.syncToolbarHeight();
+    }
+
     this.isFullscreen = false;
     this.clampOffset();
     this.redrawCanvas();
@@ -1713,6 +1816,7 @@ class HandwritingModal extends Modal {
       }
 
       latex = this.cleanLatex(latex);
+      this.saveToHistory(latex);
       this.resultEl.setText(latex);
       this.statusEl.setText("Recognition complete!");
       this.resultEl.setAttr("data-latex", latex);
@@ -1737,13 +1841,17 @@ class HandwritingModal extends Modal {
         case "custom-form": latex = await this.callCustomFormAPI(imageBase64); break;
       }
       latex = this.cleanLatex(latex);
+      this.saveToHistory(latex);
       this.resultEl.setText(latex);
       this.statusEl.setText("Image recognition complete!");
       this.resultEl.setAttr("data-latex", latex);
 
       if (window.innerWidth <= 768) {
         const resultPanel = this.contentEl.querySelector(".result-panel");
-        if (resultPanel) resultPanel.classList.add("expanded");
+        if (resultPanel) {
+          resultPanel.classList.add("expanded");
+          this.resultExpanded = true;
+        }
       }
     } catch (error) {
       this.statusEl.setText("Error: " + error.message);
@@ -1752,25 +1860,60 @@ class HandwritingModal extends Modal {
     }
   }
 
+
+  // ==================== API 辅助方法 ====================
+  isReasoningModel(model) {
+    return /^o\d/.test(model) || model.includes("o1") || model.includes("o3") || model.includes("o4");
+  }
+
+  getEffectiveDetail(model, detail) {
+    // OpenAI 官方文档：detail: "original" 仅在 gpt-5.4 及未来模型上可用
+    // gpt-4o, gpt-4.1, gpt-4o-mini, o-series (except o4-mini) 不支持 original
+    if (detail === "original") {
+      const supportedOriginalModels = ["gpt-5.4", "gpt-5.5"];
+      const isSupported = supportedOriginalModels.some(m => model.startsWith(m));
+      if (!isSupported) {
+        console.warn(`detail "original" is not supported for model "${model}". Falling back to "high".`);
+        return "high";
+      }
+    }
+    return detail;
+  }
+
+  parseApiError(response, prefix) {
+    let errorMsg = response.text || "Unknown error";
+    try {
+      const errData = JSON.parse(response.text);
+      errorMsg = errData.error?.message || errData.error?.description || errData.message || errData.detail || response.text;
+    } catch (e) {
+      // 不是 JSON，保持原样
+    }
+    return new Error(prefix + " (HTTP " + response.status + "): " + errorMsg);
+  }
+
   async callMathpix(imageBase64) {
+    if (!this.settings.mathpixAppId) {
+      throw new Error("Mathpix App ID is required. Please set it in plugin settings.");
+    }
+    if (!this.settings.apiKey) {
+      throw new Error("Mathpix App Key is required. Please set it in plugin settings.");
+    }
     const response = await requestUrl({
       url: "https://api.mathpix.com/v3/text",
       method: "POST",
       headers: {
-        "app_id": "your_app_id",
+        "app_id": this.settings.mathpixAppId,
         "app_key": this.settings.apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         src: "data:image/png;base64," + imageBase64,
         formats: ["text", "latex_styled"],
-        data_options: {
-          include_latex: true,
-          include_mathml: false,
-        },
+        math_inline_delimiters: ["$", "$"],
+        rm_spaces: true,
       }),
     });
-    if (response.status !== 200) throw new Error("Mathpix API error: " + response.text);
+    if (response.status !== 200) throw this.parseApiError(response, "Mathpix API error");
     const data = response.json;
     return data.latex_styled || data.text || "";
   }
@@ -1816,13 +1959,35 @@ class HandwritingModal extends Modal {
       },
       body: body.buffer,
     });
-    if (response.status !== 200) throw new Error("SimpleTex API error (HTTP " + response.status + "): " + response.text);
+    if (response.status !== 200) throw this.parseApiError(response, "SimpleTex API error");
     const data = response.json;
     if (!data.status) throw new Error("SimpleTex API returned error: " + JSON.stringify(data));
     return data.res?.latex || "";
   }
 
   async callOpenAI(imageBase64) {
+    const model = this.settings.openaiModel || "gpt-4o";
+    const detail = this.getEffectiveDetail(model, this.settings.openaiDetail || "high");
+
+    const requestBody = {
+      model: model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: this.settings.customPrompt },
+            { type: "image_url", image_url: { url: "data:image/png;base64," + imageBase64, detail: detail } },
+          ],
+        },
+      ],
+      max_completion_tokens: 2048,
+    };
+
+    // 推理模型 (o1, o3, o4 系列) 不支持 temperature 参数
+    if (!this.isReasoningModel(model)) {
+      requestBody.temperature = 0.1;
+    }
+
     const response = await requestUrl({
       url: this.settings.apiEndpoint || "https://api.openai.com/v1/chat/completions",
       method: "POST",
@@ -1830,24 +1995,15 @@ class HandwritingModal extends Modal {
         "Authorization": "Bearer " + this.settings.apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: this.settings.customPrompt },
-              { type: "image_url", image_url: { url: "data:image/png;base64," + imageBase64 } },
-            ],
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.1,
-      }),
+      body: JSON.stringify(requestBody),
     });
-    if (response.status !== 200) throw new Error("OpenAI API error: " + response.text);
+    if (response.status !== 200) throw this.parseApiError(response, "OpenAI API error");
     const data = response.json;
-    return data.choices[0]?.message?.content || "";
+    const message = data.choices?.[0]?.message;
+    if (message?.refusal) {
+      throw new Error("OpenAI model refused: " + message.refusal);
+    }
+    return message?.content || "";
   }
 
   async callCustomAPI(imageBase64) {
@@ -1863,7 +2019,7 @@ class HandwritingModal extends Modal {
         prompt: this.settings.customPrompt,
       }),
     });
-    if (response.status !== 200) throw new Error("Custom API error: " + response.text);
+    if (response.status !== 200) throw this.parseApiError(response, "Custom API error");
     const data = response.json;
     return data.latex || data.result || data.text || "";
   }
@@ -1914,7 +2070,7 @@ class HandwritingModal extends Modal {
       headers: headers,
       body: body.buffer,
     });
-    if (response.status !== 200) throw new Error("Custom Form API error (HTTP " + response.status + "): " + response.text);
+    if (response.status !== 200) throw this.parseApiError(response, "Custom Form API error");
     const data = response.json;
     return data[this.settings.customResponseField] || "";
   }
@@ -1931,8 +2087,190 @@ class HandwritingModal extends Modal {
 
   cleanLatex(latex) {
     latex = latex.replace(/```latex/g, "").replace(/```/g, "").trim();
-    latex = latex.replace(/^\$+/, "").replace(/\$+$/, "");
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const trimmed = latex.trim();
+      if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
+        latex = trimmed.slice(2, -2).trim();
+        changed = true;
+      } else if (trimmed.startsWith("$") && trimmed.endsWith("$") && trimmed.length > 2) {
+        latex = trimmed.slice(1, -1).trim();
+        changed = true;
+      } else if (trimmed.startsWith("\\(") && trimmed.endsWith("\\)") && trimmed.length > 4) {
+        latex = trimmed.slice(2, -2).trim();
+        changed = true;
+      } else if (trimmed.startsWith("\\[") && trimmed.endsWith("\\]") && trimmed.length > 4) {
+        latex = trimmed.slice(2, -2).trim();
+        changed = true;
+      } else {
+        latex = trimmed;
+      }
+    }
     return latex;
+  }
+
+  // ==================== 结果面板展开/收起 ====================
+  toggleResultPanel() {
+    const panel = this.contentEl.querySelector(".result-panel");
+    if (!panel) return;
+    this.resultExpanded = !this.resultExpanded;
+    panel.toggleClass("expanded", this.resultExpanded);
+    if (this.resultExpanded) {
+      // 展开：优先使用用户拖拽的高度，否则用默认 45vh
+      if (this.resultUserHeight && this.resultUserHeight > 60) {
+        panel.style.maxHeight = this.resultUserHeight + "px";
+      } else {
+        panel.style.maxHeight = "";
+      }
+    } else {
+      // 收起：清除自定义高度
+      panel.style.maxHeight = "";
+    }
+  }
+
+  // ==================== 结果面板拖拽（移动端高度调整） ====================
+  bindResultPanelDrag(handle, panel) {
+    let isDragging = false;
+    let dragStartY = 0;
+    let dragStartHeight = 0;
+    let hasMoved = false;
+    const DRAG_THRESHOLD = 5;
+
+    const onStart = (clientY) => {
+      isDragging = true;
+      hasMoved = false;
+      dragStartY = clientY;
+      const rect = panel.getBoundingClientRect();
+      dragStartHeight = rect.height;
+      handle.style.cursor = "grabbing";
+      panel.style.transition = "none";
+    };
+
+    const onMove = (clientY) => {
+      if (!isDragging) return;
+      const dy = dragStartY - clientY;
+      if (Math.abs(dy) > DRAG_THRESHOLD) hasMoved = true;
+      if (!hasMoved) return;
+
+      const newHeight = Math.max(36, Math.min(window.innerHeight * 0.85, dragStartHeight + dy));
+      panel.style.maxHeight = newHeight + "px";
+      if (newHeight > 60) {
+        panel.classList.add("expanded");
+        this.resultExpanded = true;
+      } else {
+        panel.classList.remove("expanded");
+        this.resultExpanded = false;
+      }
+    };
+
+    const onEnd = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      handle.style.cursor = "";
+      // 延迟恢复 transition，避免弹回动画
+      requestAnimationFrame(() => {
+        panel.style.transition = "";
+      });
+      if (hasMoved) {
+        // 标记已拖拽，阻止 click 事件触发 toggle
+        handle.setAttribute("data-dragged", "true");
+        const rect = panel.getBoundingClientRect();
+        this.resultUserHeight = rect.height;
+      }
+    };
+
+    handle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      onStart(e.clientY);
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (isDragging) {
+        e.preventDefault();
+        onMove(e.clientY);
+      }
+    });
+    document.addEventListener("mouseup", onEnd);
+
+    let pendingDragY = null;
+
+    handle.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1) {
+        // Don't preventDefault so click event can fire for tap-to-toggle
+        pendingDragY = e.touches[0].clientY;
+        dragStartY = e.touches[0].clientY;
+        hasMoved = false;
+      }
+    }, { passive: true });
+
+    document.addEventListener("touchmove", (e) => {
+      if (pendingDragY !== null && e.touches.length === 1) {
+        const dy = pendingDragY - e.touches[0].clientY;
+        if (Math.abs(dy) > DRAG_THRESHOLD) {
+          if (!isDragging) {
+            e.preventDefault();
+            onStart(pendingDragY);
+            pendingDragY = null;
+          }
+        }
+      }
+      if (isDragging && e.touches.length === 1) {
+        e.preventDefault();
+        onMove(e.touches[0].clientY);
+      }
+    }, { passive: false });
+
+    document.addEventListener("touchend", (e) => {
+      pendingDragY = null;
+      onEnd();
+    });
+    document.addEventListener("touchcancel", (e) => {
+      pendingDragY = null;
+      onEnd();
+    });
+  }
+
+  // ==================== 历史记录（持久化到 plugin 实例） ====================
+  updateHistoryUI() {
+    const idx = this.plugin.historyIndex;
+    const len = this.plugin.history.length;
+    if (this.prevHistoryBtn) {
+      this.prevHistoryBtn.toggleClass("disabled", idx <= 0);
+    }
+    if (this.nextHistoryBtn) {
+      this.nextHistoryBtn.toggleClass("disabled", idx >= len - 1);
+    }
+    if (this.historyCounter) {
+      this.historyCounter.setText(len > 0 ? `${idx + 1}/${len}` : "0/0");
+    }
+  }
+
+  navigateHistory(delta) {
+    const newIndex = this.plugin.historyIndex + delta;
+    if (newIndex < 0 || newIndex >= this.plugin.history.length) return;
+    this.plugin.historyIndex = newIndex;
+    const latex = this.plugin.history[newIndex];
+    this.resultEl.setText(latex || "(No result yet)");
+    this.resultEl.setAttr("data-latex", latex || "");
+    this.statusEl.setText(`History: ${newIndex + 1}/${this.plugin.history.length}`);
+    this.updateHistoryUI();
+  }
+
+  saveToHistory(latex) {
+    if (!latex) return;
+    const maxSize = this.settings.maxHistorySize || 30;
+    // 如果当前不在历史末尾，截断后面的记录
+    if (this.plugin.historyIndex < this.plugin.history.length - 1) {
+      this.plugin.history = this.plugin.history.slice(0, this.plugin.historyIndex + 1);
+    }
+    this.plugin.history.push(latex);
+    // 限制长度
+    if (this.plugin.history.length > maxSize) {
+      this.plugin.history.shift();
+    } else {
+      this.plugin.historyIndex++;
+    }
+    this.updateHistoryUI();
   }
 
   insertAndClose() {
@@ -1969,6 +2307,7 @@ class HandwritingModal extends Modal {
     this.cropperImageOffsetY = 0;
     this.cropperSelectionData = null;
     if (this._cleanupResize) this._cleanupResize();
+    if (this._toolbarResizeObserver) { this._toolbarResizeObserver.disconnect(); this._toolbarResizeObserver = null; }
     if (this.isFullscreen) this.exitFullscreen();
     this.contentEl.empty();
     document.body.style.cursor = "";
@@ -2008,12 +2347,42 @@ class HandwritingSettingTab extends PluginSettingTab {
         .onChange(async (value) => { this.plugin.settings.apiKey = value; await this.plugin.saveSettings(); })
       );
 
+    if (this.plugin.settings.apiProvider === "mathpix") {
+      new Setting(containerEl)
+        .setName("Mathpix App ID")
+        .setDesc("Your Mathpix App ID (required for Mathpix). Get it from https://mathpix.com/")
+        .addText((text) => text.setPlaceholder("your_app_id").setValue(this.plugin.settings.mathpixAppId)
+          .onChange(async (value) => { this.plugin.settings.mathpixAppId = value; await this.plugin.saveSettings(); })
+        );
+    }
+
     if (this.plugin.settings.apiProvider === "custom" || this.plugin.settings.apiProvider === "openai" || this.plugin.settings.apiProvider === "custom-form") {
       new Setting(containerEl)
         .setName("API Endpoint")
         .setDesc("Custom API endpoint URL (optional for OpenAI)")
         .addText((text) => text.setPlaceholder("https://api.example.com/recognize").setValue(this.plugin.settings.apiEndpoint)
           .onChange(async (value) => { this.plugin.settings.apiEndpoint = value; await this.plugin.saveSettings(); })
+        );
+    }
+
+    if (this.plugin.settings.apiProvider === "openai") {
+      new Setting(containerEl)
+        .setName("OpenAI Model")
+        .setDesc("Model name for OpenAI vision API (e.g. gpt-4o, gpt-4o-mini, gpt-4.1)")
+        .addText((text) => text.setPlaceholder("gpt-4o").setValue(this.plugin.settings.openaiModel)
+          .onChange(async (value) => { this.plugin.settings.openaiModel = value; await this.plugin.saveSettings(); })
+        );
+
+      new Setting(containerEl)
+        .setName("Vision Detail Level")
+        .setDesc("Image detail level: low (faster/cheaper), high (better accuracy), auto (default). NOTE: original requires gpt-5.4+ and will auto-fallback to high on older models.")
+        .addDropdown((dropdown) => dropdown
+          .addOption("low", "low")
+          .addOption("high", "high")
+          .addOption("auto", "auto")
+          .addOption("original", "original (GPT-5.4+)")
+          .setValue(this.plugin.settings.openaiDetail || "high")
+          .onChange(async (value) => { this.plugin.settings.openaiDetail = value; await this.plugin.saveSettings(); })
         );
     }
 
@@ -2097,12 +2466,19 @@ class HandwritingSettingTab extends PluginSettingTab {
         .onChange(async (value) => { this.plugin.settings.canvasHeight = value; await this.plugin.saveSettings(); })
       );
 
+    new Setting(containerEl)
+      .setName("Max History Size")
+      .setDesc("Maximum number of recognition results to keep in history (0 to disable)")
+      .addSlider((slider) => slider.setLimits(0, 100, 5).setValue(this.plugin.settings.maxHistorySize || 30).setDynamicTooltip()
+        .onChange(async (value) => { this.plugin.settings.maxHistorySize = value; await this.plugin.saveSettings(); })
+      );
+
     containerEl.createEl("h3", { text: "API Setup Guide" });
     const guide = containerEl.createEl("div");
     guide.innerHTML = `
       <p><strong>SimpleTex (Recommended):</strong> Register at <a href="https://simpletex.cn/">simpletex.cn</a>, go to User Center, create a <strong>UAT (User Authorization Token)</strong> in "User Authorization Token" menu. Paste the token here.</p>
-      <p><strong>Mathpix:</strong> Get keys at <a href="https://mathpix.com/">mathpix.com</a>. Most accurate for math formulas.</p>
-      <p><strong>OpenAI:</strong> Requires GPT-4o access. Use your OpenAI API key.</p>
+      <p><strong>Mathpix:</strong> Get <strong>App ID</strong> and <strong>App Key</strong> at <a href="https://mathpix.com/">mathpix.com</a>. Paste App ID in "Mathpix App ID" and App Key in "API Key". Most accurate for math formulas.</p>
+      <p><strong>OpenAI:</strong> Use your OpenAI API key. Supports gpt-4o, gpt-4o-mini, gpt-4.1, etc. Set "detail" to "high" for best formula recognition accuracy.</p>
       <p><strong>Custom (JSON):</strong> Any API that accepts base64 image and returns JSON with 'latex' field.</p>
       <p><strong>Custom (Multipart Form):</strong> For APIs that accept multipart/form-data upload (like the example below). Set URL, API key, response field name, header name, and image field name.</p>
     `;
