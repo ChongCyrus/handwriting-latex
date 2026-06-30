@@ -9,7 +9,7 @@
 - ✍️ **Handwriting canvas** – draw with your finger or mouse, with pen/eraser/pan modes.
 - 📷 **Image import** – load images from your device’s photo gallery.
 - 🧠 **Formula recognition** – powered by:
-  - [SimpleTex](https://simpletex.cn/) (recommended, free UAT token)
+  - [SimpleTex](https://simpletex.net/) (recommended, free UAT token)
   - Custom APIs (JSON or multipart/form-data)
   - *(Experimental)* Mathpix, OpenAI GPT-4o Vision
 - 🎯 **Smart crop** – select exactly the region you want to recognize.
