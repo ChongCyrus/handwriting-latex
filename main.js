@@ -1,6 +1,5 @@
 const { Plugin, Modal, Notice, PluginSettingTab, Setting, requestUrl } = require('obsidian');
 
-
 const DEFAULT_SETTINGS = {
   apiProvider: "simpletex",
   apiKey: "",
