@@ -1,5 +1,6 @@
 const { Plugin, Modal, Notice, PluginSettingTab, Setting, requestUrl } = require('obsidian');
 
+
 const DEFAULT_SETTINGS = {
   apiProvider: "simpletex",
   apiKey: "",
@@ -18,7 +19,114 @@ const DEFAULT_SETTINGS = {
   openaiModel: "gpt-4o",
   openaiDetail: "high",
   maxHistorySize: 30,
+  customProviders: [],
+  customFormFields: [],
+  customPlaceholders: []
 };
+
+const PRESET_TEMPLATES = [
+  {
+    name: "OpenAI GPT-4o (Custom)",
+    method: "POST",
+    url: "https://api.openai.com/v1/chat/completions",
+    headers: [
+      { key: "Authorization", value: "Bearer {{apiKey}}" },
+      { key: "Content-Type", value: "application/json" }
+    ],
+    bodyType: "json",
+    bodyTemplate: JSON.stringify({
+      model: "gpt-4o",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "{{prompt}}" },
+          { type: "image_url", image_url: { url: "{{image}}", detail: "high" } }
+        ]
+      }],
+      max_tokens: 2048
+    }, null, 2),
+    responsePath: "choices.0.message.content",
+    responseType: "json"
+  },
+  {
+    name: "OpenAI o1/o3/o4 (Custom)",
+    method: "POST",
+    url: "https://api.openai.com/v1/chat/completions",
+    headers: [
+      { key: "Authorization", value: "Bearer {{apiKey}}" },
+      { key: "Content-Type", value: "application/json" }
+    ],
+    bodyType: "json",
+    bodyTemplate: JSON.stringify({
+      model: "o3",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "{{prompt}}" },
+          { type: "image_url", image_url: { url: "{{image}}", detail: "high" } }
+        ]
+      }],
+      max_completion_tokens: 2048
+    }, null, 2),
+    responsePath: "choices.0.message.content",
+    responseType: "json"
+  },
+  {
+    name: "Anthropic Claude (Custom)",
+    method: "POST",
+    url: "https://api.anthropic.com/v1/messages",
+    headers: [
+      { key: "x-api-key", value: "{{apiKey}}" },
+      { key: "Content-Type", value: "application/json" },
+      { key: "anthropic-version", value: "2023-06-01" }
+    ],
+    bodyType: "json",
+    bodyTemplate: JSON.stringify({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 2048,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "{{prompt}}" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "{{image_base64}}" } }
+        ]
+      }]
+    }, null, 2),
+    responsePath: "content.0.text",
+    responseType: "json"
+  },
+  {
+    name: "Google Gemini (Custom)",
+    method: "POST",
+    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={{apiKey}}",
+    headers: [
+      { key: "Content-Type", value: "application/json" }
+    ],
+    bodyType: "json",
+    bodyTemplate: JSON.stringify({
+      contents: [{
+        parts: [
+          { text: "{{prompt}}" },
+          { inline_data: { mime_type: "image/png", data: "{{image_base64}}" } }
+        ]
+      }]
+    }, null, 2),
+    responsePath: "candidates.0.content.parts.0.text",
+    responseType: "json"
+  },
+  {
+    name: "SimpleTex-style (Custom Form)",
+    method: "POST",
+    url: "https://server.simpletex.cn/api/latex_ocr",
+    headers: [
+      { key: "token", value: "{{apiKey}}" }
+    ],
+    bodyType: "form-data",
+    formFieldName: "file",
+    responsePath: "res.latex",
+    responseType: "json"
+  }
+];
 
 class HandwritingLatexPlugin extends Plugin {
   async onload() {
@@ -1807,13 +1915,7 @@ class HandwritingModal extends Modal {
     try {
       let latex = "";
       const imageBase64 = this.getFullCanvasImage().split(",")[1];
-      switch (this.settings.apiProvider) {
-        case "mathpix": latex = await this.callMathpix(imageBase64); break;
-        case "simpletex": latex = await this.callSimpletex(imageBase64); break;
-        case "openai": latex = await this.callOpenAI(imageBase64); break;
-        case "custom": latex = await this.callCustomAPI(imageBase64); break;
-        case "custom-form": latex = await this.callCustomFormAPI(imageBase64); break;
-      }
+      latex = await this.dispatchRecognize(imageBase64);
 
       latex = this.cleanLatex(latex);
       this.saveToHistory(latex);
@@ -1833,13 +1935,7 @@ class HandwritingModal extends Modal {
     try {
       let latex = "";
       const imageBase64 = base64DataUrl.split(",")[1];
-      switch (this.settings.apiProvider) {
-        case "mathpix": latex = await this.callMathpix(imageBase64); break;
-        case "simpletex": latex = await this.callSimpletex(imageBase64); break;
-        case "openai": latex = await this.callOpenAI(imageBase64); break;
-        case "custom": latex = await this.callCustomAPI(imageBase64); break;
-        case "custom-form": latex = await this.callCustomFormAPI(imageBase64); break;
-      }
+      latex = await this.dispatchRecognize(imageBase64);
       latex = this.cleanLatex(latex);
       this.saveToHistory(latex);
       this.resultEl.setText(latex);
@@ -1857,6 +1953,21 @@ class HandwritingModal extends Modal {
       this.statusEl.setText("Error: " + error.message);
       new Notice("Image recognition failed: " + error.message);
       console.error(error);
+    }
+  }
+
+  async dispatchRecognize(imageBase64) {
+    switch (this.settings.apiProvider) {
+      case "mathpix": return await this.callMathpix(imageBase64);
+      case "simpletex": return await this.callSimpletex(imageBase64);
+      case "openai": return await this.callOpenAI(imageBase64);
+      case "custom": return await this.callCustomAPI(imageBase64);
+      case "custom-form": return await this.callCustomFormAPI(imageBase64);
+      default:
+        if (this.getCustomProviderConfig(this.settings.apiProvider)) {
+          return await this.callCustomProvider(imageBase64);
+        }
+        throw new Error("Unknown API provider: " + this.settings.apiProvider);
     }
   }
 
@@ -2021,7 +2132,8 @@ class HandwritingModal extends Modal {
     });
     if (response.status !== 200) throw this.parseApiError(response, "Custom API error");
     const data = response.json;
-    return data.latex || data.result || data.text || "";
+    const customField = this.settings.customResponseField;
+    return (customField && data[customField]) || data.latex || data.result || data.text || "";
   }
 
   async callCustomFormAPI(imageBase64) {
@@ -2048,6 +2160,22 @@ class HandwritingModal extends Modal {
       return newBuffer;
     };
     let body = new Uint8Array(0);
+
+    // Append additional form fields before the image (legacy custom-form mode)
+    const formFields = this.settings.customFormFields || [];
+    if (formFields && Array.isArray(formFields)) {
+      for (const field of formFields) {
+        if (field.name) {
+          let fieldValue = field.value || '';
+          fieldValue = this.resolvePlaceholders(fieldValue, imageBase64);
+          body = appendString(body, "--" + boundary);
+          body = appendString(body, 'Content-Disposition: form-data; name="' + field.name + '"');
+          body = appendString(body, "");
+          body = appendString(body, fieldValue);
+        }
+      }
+    }
+
     body = appendString(body, "--" + boundary);
     body = appendString(body, 'Content-Disposition: form-data; name="' + this.settings.customImageFieldName + '"; filename="formula.png"');
     body = appendString(body, "Content-Type: image/png");
@@ -2075,6 +2203,250 @@ class HandwritingModal extends Modal {
     return data[this.settings.customResponseField] || "";
   }
 
+  // ==================== Custom Provider API ====================
+  getCustomProviderConfig(providerId) {
+    const providers = this.settings.customProviders || [];
+    return providers.find(p => p.id === providerId);
+  }
+
+  resolvePlaceholders(str, imageBase64) {
+    // Built-in placeholders
+    const now = new Date();
+    const builtins = {
+      image_base64: imageBase64 || '',
+      image: 'data:image/png;base64,' + (imageBase64 || ''),
+      prompt: this.settings.customPrompt || '',
+      apiKey: this.settings.apiKey || '',
+      timestamp: String(Math.floor(now.getTime() / 1000)),
+      datetime: now.toISOString(),
+      date: now.toISOString().slice(0, 10),
+      time: now.toTimeString().slice(0, 8),
+      random: Math.random().toString(16).slice(2, 10),
+    };
+
+    let result = str;
+    // Replace built-in placeholders using split/join (avoids regex escaping issues)
+    for (const [key, val] of Object.entries(builtins)) {
+      result = result.split('{{' + key + '}}').join(val);
+    }
+
+    // Replace custom placeholders defined in settings
+    const customPlaceholders = this.settings.customPlaceholders || [];
+    for (const ph of customPlaceholders) {
+      if (ph.name) {
+        result = result.split('{{' + ph.name + '}}').join(ph.value || '');
+      }
+    }
+
+    return result;
+  }
+
+  // Safe JSON template resolution: parses template as JSON, recursively
+  // walks the structure, replaces placeholders in string values, and
+  // re-serializes via JSON.stringify. This prevents JSON injection when
+  // placeholder values contain quotes, backslashes, or control characters.
+  resolveJSONTemplate(template, imageBase64) {
+    let obj;
+    try {
+      obj = JSON.parse(template);
+    } catch (e) {
+      console.warn('Body template is not valid JSON, falling back to string substitution:', e);
+      return this.resolvePlaceholders(template, imageBase64);
+    }
+    const walk = (node) => {
+      if (typeof node === 'string') {
+        return this.resolvePlaceholders(node, imageBase64);
+      }
+      if (Array.isArray(node)) {
+        return node.map(walk);
+      }
+      if (typeof node === 'object' && node !== null) {
+        const result = {};
+        for (const [k, v] of Object.entries(node)) {
+          result[k] = walk(v);
+        }
+        return result;
+      }
+      return node;
+    };
+    const resolved = walk(obj);
+    return JSON.stringify(resolved);
+  }
+
+  // Kept for backward compatibility — delegates to resolvePlaceholders
+  substituteTemplate(template, imageBase64) {
+    return this.resolvePlaceholders(template, imageBase64);
+  }
+resolvePath(obj, path) {
+    path = path.replace(/^\$\./, '');
+    const parts = path.split('.');
+    let current = obj;
+    for (const part of parts) {
+      if (current == null) return '';
+      const arrayMatch = part.match(/^(.+?)\[(\d+)\]$/);
+      if (arrayMatch) {
+        current = current[arrayMatch[1]];
+        if (current == null) return '';
+        current = current[parseInt(arrayMatch[2])];
+      } else {
+        if (Array.isArray(current) && /^\d+$/.test(part)) {
+          current = current[parseInt(part)];
+        } else {
+          current = current[part];
+        }
+      }
+    }
+    return current != null ? String(current) : '';
+  }
+
+  async buildFormDataBody(imageBase64, fieldName, boundary, formFields) {
+    const blob = this.base64ToBlob(imageBase64);
+    const arrayBuffer = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(blob);
+    });
+    const encoder = new TextEncoder();
+    const appendString = (buffer, str) => {
+      const encoded = encoder.encode(str + "\r\n");
+      const newBuf = new Uint8Array(buffer.length + encoded.length);
+      newBuf.set(buffer);
+      newBuf.set(encoded, buffer.length);
+      return newBuf;
+    };
+    const appendBytes = (buffer, bytes) => {
+      const newBuf = new Uint8Array(buffer.length + bytes.length);
+      newBuf.set(buffer);
+      newBuf.set(bytes, buffer.length);
+      return newBuf;
+    };
+    let body = new Uint8Array(0);
+
+    // Append additional form fields first (before the image)
+    if (formFields && Array.isArray(formFields)) {
+      for (const field of formFields) {
+        if (field.name) {
+          let fieldValue = field.value || '';
+          fieldValue = this.resolvePlaceholders(fieldValue, imageBase64);
+          body = appendString(body, "--" + boundary);
+          body = appendString(body, 'Content-Disposition: form-data; name="' + field.name + '"');
+          body = appendString(body, "");
+          body = appendString(body, fieldValue);
+        }
+      }
+    }
+
+    body = appendString(body, "--" + boundary);
+    body = appendString(body, 'Content-Disposition: form-data; name="' + fieldName + '"; filename="formula.png"');
+    body = appendString(body, "Content-Type: image/png");
+    body = appendString(body, "");
+    const fileBytes = new Uint8Array(arrayBuffer);
+    body = appendBytes(body, fileBytes);
+    body = appendString(body, "");
+    body = appendString(body, "--" + boundary + "--");
+    return body;
+  }
+
+  async callCustomProvider(imageBase64) {
+    const config = this.getCustomProviderConfig(this.settings.apiProvider);
+    if (!config) throw new Error("Custom provider configuration not found: " + this.settings.apiProvider);
+
+    let url = config.url || '';
+    url = this.resolvePlaceholders(url, imageBase64);
+
+    const headers = {};
+    const configHeaders = config.headers || [];
+    for (const h of configHeaders) {
+      if (h.key) {
+        let value = h.value || '';
+        value = this.resolvePlaceholders(value, imageBase64);
+        headers[h.key] = value;
+      }
+    }
+
+    const hasContentType = Object.keys(headers).some(k => k.toLowerCase() === 'content-type');
+    if (!hasContentType) {
+      if (config.bodyType === 'json') {
+        headers['Content-Type'] = 'application/json';
+      }
+    }
+
+    let body = undefined;
+    const method = config.method || 'POST';
+
+    if (method === 'GET' || method === 'DELETE') {
+      // No body
+    } else if (config.bodyType === 'json') {
+      const template = config.bodyTemplate || '{}';
+      body = this.resolveJSONTemplate(template, imageBase64);
+    } else if (config.bodyType === 'raw') {
+      body = this.substituteTemplate(config.bodyTemplate || '', imageBase64);
+    } else if (config.bodyType === 'form-data') {
+      const boundary = "----FormBoundary" + Math.random().toString(36).substring(2);
+      // Merge formFields array with key-value pairs extracted from bodyTemplate (if present)
+      let mergedFormFields = config.formFields ? [...config.formFields] : [];
+      if (config.bodyTemplate) {
+        try {
+          const templateFields = JSON.parse(config.bodyTemplate);
+          for (const [key, value] of Object.entries(templateFields)) {
+            const imageFieldName = config.formFieldName || 'image';
+            if (!mergedFormFields.some(f => f.name === key) && key !== imageFieldName) {
+              const strValue = (typeof value === 'object' && value !== null)
+                ? JSON.stringify(value)
+                : String(value);
+              mergedFormFields.push({ name: key, value: strValue });
+            }
+          }
+        } catch (e) {
+          console.warn('Form-data bodyTemplate is not valid JSON, using formFields only:', e);
+        }
+      }
+      const formBody = await this.buildFormDataBody(imageBase64, config.formFieldName || 'image', boundary, mergedFormFields);
+      const hasFormContentType = Object.keys(headers).some(k => k.toLowerCase() === 'content-type');
+      if (!hasFormContentType) {
+        headers['Content-Type'] = 'multipart/form-data; boundary=' + boundary;
+      }
+      body = formBody.buffer;
+    }
+
+    const requestOptions = {
+      url: url,
+      method: method,
+      headers: headers,
+    };
+    if (body !== undefined) {
+      requestOptions.body = body;
+    }
+
+    const response = await requestUrl(requestOptions);
+
+    if (response.status < 200 || response.status >= 300) {
+      let errorMsg = response.text || ("HTTP " + response.status);
+      if (config.errorPath && response.json) {
+        try {
+          const errData = response.json;
+          const extracted = this.resolvePath(errData, config.errorPath);
+          if (extracted) errorMsg = extracted;
+        } catch (e) {}
+      } else {
+        try {
+          const errData = JSON.parse(response.text);
+          errorMsg = errData.error?.message || errData.error?.description || errData.message || errData.detail || response.text;
+        } catch (e) {}
+      }
+      throw new Error("Custom API error (HTTP " + response.status + "): " + errorMsg);
+    }
+
+    if (config.responseType === 'regex') {
+      const regex = new RegExp(config.responseRegex || '(.*)', 's');
+      const match = (response.text || '').match(regex);
+      return match ? (match[1] !== undefined ? match[1] : match[0]) : '';
+    } else {
+      const data = response.json;
+      return this.resolvePath(data, config.responsePath || '');
+    }
+  }
   base64ToBlob(base64, mimeType = "image/png") {
     const byteString = atob(base64);
     const ab = new ArrayBuffer(byteString.length);
@@ -2258,7 +2630,8 @@ class HandwritingModal extends Modal {
 
   saveToHistory(latex) {
     if (!latex) return;
-    const maxSize = this.settings.maxHistorySize || 30;
+    const maxSize = this.settings.maxHistorySize ?? 30;
+    if (maxSize === 0) return;
     // 如果当前不在历史末尾，截断后面的记录
     if (this.plugin.historyIndex < this.plugin.history.length - 1) {
       this.plugin.history = this.plugin.history.slice(0, this.plugin.historyIndex + 1);
@@ -2320,6 +2693,7 @@ class HandwritingSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
+    this._expandedProviders = new Set();
   }
 
   display() {
@@ -2327,22 +2701,37 @@ class HandwritingSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Handwriting to LaTeX Settings" });
 
+    // ========== API Provider dropdown (built-in + custom) ==========
+    const providerOptions = {
+      "simpletex": "SimpleTex (Recommended)",
+      "mathpix": "Mathpix",
+      "openai": "OpenAI GPT-4o Vision",
+    };
+    providerOptions["custom"] = "Custom API (JSON) [Legacy]";
+    providerOptions["custom-form"] = "Custom API (Multipart Form) [Legacy]";
+    const customProviders = this.plugin.settings.customProviders || [];
+    for (const cp of customProviders) {
+      providerOptions[cp.id] = "\uD83D\uDD27 " + cp.name;
+    }
+
     new Setting(containerEl)
       .setName("API Provider")
-      .setDesc("Choose which service to use for formula recognition")
-      .addDropdown((dropdown) => dropdown
-        .addOption("simpletex", "SimpleTex (Recommended)")
-        .addOption("mathpix", "Mathpix")
-        .addOption("openai", "OpenAI GPT-4o Vision")
-        .addOption("custom", "Custom API (JSON)")
-        .addOption("custom-form", "Custom API (Multipart Form)")
-        .setValue(this.plugin.settings.apiProvider)
-        .onChange(async (value) => { this.plugin.settings.apiProvider = value; await this.plugin.saveSettings(); this.display(); })
-      );
+      .setDesc("Choose which service to use for formula recognition. Custom providers are listed with \uD83D\uDD27 prefix.")
+      .addDropdown((dropdown) => {
+        for (const [key, label] of Object.entries(providerOptions)) {
+          dropdown.addOption(key, label);
+        }
+        dropdown.setValue(this.plugin.settings.apiProvider);
+        dropdown.onChange(async (value) => {
+          this.plugin.settings.apiProvider = value;
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
 
     new Setting(containerEl)
       .setName("API Key")
-      .setDesc("For SimpleTex: use UAT token. For Mathpix: App Key. For OpenAI: API key.")
+      .setDesc("For SimpleTex: use UAT token. For Mathpix: App Key. For OpenAI: API key. For custom providers, this populates the {{apiKey}} placeholder.")
       .addText((text) => text.setPlaceholder("sk-...").setValue(this.plugin.settings.apiKey)
         .onChange(async (value) => { this.plugin.settings.apiKey = value; await this.plugin.saveSettings(); })
       );
@@ -2389,7 +2778,7 @@ class HandwritingSettingTab extends PluginSettingTab {
     if (this.plugin.settings.apiProvider === "openai" || this.plugin.settings.apiProvider === "custom") {
       new Setting(containerEl)
         .setName("Custom Prompt")
-        .setDesc("Prompt sent to AI for recognition")
+        .setDesc("Prompt sent to AI for recognition. Also available as {{prompt}} placeholder in custom provider body templates.")
         .addTextArea((text) => text.setValue(this.plugin.settings.customPrompt)
           .onChange(async (value) => { this.plugin.settings.customPrompt = value; await this.plugin.saveSettings(); })
         );
@@ -2416,6 +2805,44 @@ class HandwritingSettingTab extends PluginSettingTab {
         .addText((text) => text.setPlaceholder("image").setValue(this.plugin.settings.customImageFieldName)
           .onChange(async (value) => { this.plugin.settings.customImageFieldName = value; await this.plugin.saveSettings(); })
         );
+      // Additional form fields for legacy custom-form mode
+      const legacyFormFieldsSection = containerEl.createDiv({ cls: "provider-formfields-section" });
+      legacyFormFieldsSection.createEl("h4", { text: "Additional Form Fields" });
+      legacyFormFieldsSection.createEl("p", { text: "Add extra form-data fields (e.g. prompt, model). Values support {{prompt}}, {{apiKey}}, {{image_base64}}, {{image}} placeholders.", cls: "setting-item-description" });
+      
+      const legacyFormFieldsList = legacyFormFieldsSection.createDiv({ cls: "provider-formfields-list" });
+      const renderLegacyFormFields = () => {
+        legacyFormFieldsList.empty();
+        const fields = this.plugin.settings.customFormFields || [];
+        for (let fi = 0; fi < fields.length; fi++) {
+          const field = fields[fi];
+          const row = legacyFormFieldsList.createDiv({ cls: "provider-header-row" });
+          row.style.cssText = "display:flex;gap:6px;align-items:center;margin-bottom:6px;";
+          
+          const nameInput = row.createEl("input", { type: "text", placeholder: "Field Name", value: field.name || "" });
+          nameInput.style.cssText = "flex:1;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);";
+          nameInput.addEventListener("input", async () => { field.name = nameInput.value; await this.plugin.saveSettings(); });
+          
+          const valueInput = row.createEl("input", { type: "text", placeholder: "Field Value", value: field.value || "" });
+          valueInput.style.cssText = "flex:2;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);font-family:monospace;";
+          valueInput.addEventListener("input", async () => { field.value = valueInput.value; await this.plugin.saveSettings(); });
+          
+          const removeBtn = row.createEl("button", { text: "\u2715", attr: { "aria-label": "Remove field" } });
+          removeBtn.style.cssText = "padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);color:var(--text-error);flex-shrink:0;";
+          removeBtn.addEventListener("click", async () => { fields.splice(fi, 1); await this.plugin.saveSettings(); renderLegacyFormFields(); });
+        }
+        
+        const addRow = legacyFormFieldsList.createDiv({ cls: "provider-header-row" });
+        const addBtn = addRow.createEl("button", { text: "+ Add Form Field" });
+        addBtn.style.cssText = "padding:4px 12px;font-size:11px;cursor:pointer;border:1px dashed var(--background-modifier-border);border-radius:4px;background:transparent;";
+        addBtn.addEventListener("click", async () => {
+          if (!this.plugin.settings.customFormFields) this.plugin.settings.customFormFields = [];
+          this.plugin.settings.customFormFields.push({ name: "", value: "" });
+          await this.plugin.saveSettings();
+          renderLegacyFormFields();
+        });
+      };
+      renderLegacyFormFields();
     }
 
     new Setting(containerEl)
@@ -2469,9 +2896,153 @@ class HandwritingSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Max History Size")
       .setDesc("Maximum number of recognition results to keep in history (0 to disable)")
-      .addSlider((slider) => slider.setLimits(0, 100, 5).setValue(this.plugin.settings.maxHistorySize || 30).setDynamicTooltip()
+      .addSlider((slider) => slider.setLimits(0, 100, 5).setValue(this.plugin.settings.maxHistorySize ?? 30).setDynamicTooltip()
         .onChange(async (value) => { this.plugin.settings.maxHistorySize = value; await this.plugin.saveSettings(); })
       );
+
+    // ========== Custom API Providers Management ==========
+    containerEl.createEl("h3", { text: "\uD83D\uDD27 Custom API Providers" });
+    
+    const customDesc = containerEl.createDiv({ cls: "setting-item-description" });
+    customDesc.innerHTML = `
+      <p>Define your own API endpoints for formula recognition. Each provider supports:</p>
+      <ul>
+        <li><strong>Name:</strong> Display name shown in the provider dropdown</li>
+        <li><strong>Method:</strong> GET, POST, PUT, DELETE, PATCH</li>
+        <li><strong>URL:</strong> API endpoint (supports <code>{{apiKey}}</code> placeholder)</li>
+        <li><strong>Headers:</strong> Key-value pairs (values support <code>{{apiKey}}</code> placeholder)</li>
+        <li><strong>Body Type:</strong> JSON, Form-Data (multipart), or Raw text</li>
+        <li><strong>Body Template:</strong> For JSON/Raw, use placeholders: <code>{{image_base64}}</code> (raw base64), <code>{{image}}</code> (full data URL), <code>{{prompt}}</code>, <code>{{apiKey}}</code>, <code>{{timestamp}}</code>, <code>{{datetime}}</code>, <code>{{date}}</code>, <code>{{time}}</code>, <code>{{random}}</code>, or any custom placeholder defined in "Custom Placeholders" below.</li>
+        <li><strong>Response Path:</strong> Dot-path (e.g. <code>data.latex</code>) or JSONPath (e.g. <code>$.choices.0.message.content</code>) to extract LaTeX from JSON response</li>
+        <li><strong>Regex:</strong> For non-JSON responses, a regex with a capture group to extract LaTeX</li>
+      </ul>
+    `;
+
+    // Preset templates
+    const presetsDiv = containerEl.createDiv({ cls: "custom-providers-presets" });
+    presetsDiv.createEl("h4", { text: "\uD83D\DCCB Import Preset Template" });
+    
+    const presetButtons = presetsDiv.createDiv({ cls: "preset-buttons" });
+    presetButtons.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;";
+    
+    const importPreset = async (preset) => {
+      const providers = this.plugin.settings.customProviders || [];
+      // Check for existing providers with the same name to avoid duplicates
+      const existingNames = providers.map(p => p.name);
+      let presetName = preset.name;
+      if (existingNames.includes(presetName)) {
+        let suffix = 2;
+        while (existingNames.includes(presetName + " (" + suffix + ")")) {
+          suffix++;
+        }
+        presetName = presetName + " (" + suffix + ")";
+      }
+      const id = "custom_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+      const presetClone = JSON.parse(JSON.stringify(preset));
+      presetClone.name = presetName;
+      providers.push({ id, ...presetClone });
+      this.plugin.settings.customProviders = providers;
+      await this.plugin.saveSettings();
+      this.display();
+      new Notice(`Preset "${presetName}" imported!`);
+    };
+
+    for (const preset of PRESET_TEMPLATES) {
+      const btn = presetButtons.createEl("button", { text: "\uD83D\DCE5 " + preset.name, cls: "preset-import-btn" });
+      btn.style.cssText = "padding:6px 12px;font-size:12px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-secondary);";
+      btn.addEventListener("click", () => importPreset(preset));
+    }
+
+    const listContainer = containerEl.createDiv({ cls: "custom-providers-list" });
+    this.renderCustomProvidersList(listContainer);
+
+    new Setting(containerEl)
+      .setName("Add New Provider")
+      .setDesc("Create a custom API provider configuration")
+      .addButton((btn) => btn.setButtonText("\u2795 Add Provider").setCta().onClick(async () => {
+        const providers = this.plugin.settings.customProviders || [];
+        const id = "custom_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+        providers.push({
+          id,
+          name: "New Provider",
+          method: "POST",
+          url: "https://api.example.com/recognize",
+          headers: [
+            { key: "Authorization", value: "Bearer {{apiKey}}" },
+            { key: "Content-Type", value: "application/json" }
+          ],
+          bodyType: "json",
+          bodyTemplate: '{"image": "{{image}}", "prompt": "{{prompt}}"}',
+          formFieldName: "image",
+          formFields: [],
+          responsePath: "data.latex",
+          responseType: "json",
+          responseRegex: "",
+          errorPath: ""
+        });
+        this.plugin.settings.customProviders = providers;
+        await this.plugin.saveSettings();
+        this.display();
+        new Notice("New provider added! Configure it below.");
+      }));
+
+    // ========== Custom Placeholders ==========
+    containerEl.createEl("h3", { text: "🔖 Custom Placeholders" });
+    
+    const placeholdersDesc = containerEl.createDiv({ cls: "setting-item-description" });
+    placeholdersDesc.innerHTML = `
+      <p>Define custom placeholders that can be used in body templates, form field values, URLs, and headers. Built-in placeholders are always available:</p>
+      <ul>
+        <li><code>{{image_base64}}</code> — raw base64 image data</li>
+        <li><code>{{image}}</code> — full data URL (data:image/png;base64,...)</li>
+        <li><code>{{prompt}}</code> — custom prompt text</li>
+        <li><code>{{apiKey}}</code> — API key from settings</li>
+        <li><code>{{timestamp}}</code> — current Unix timestamp (seconds)</li>
+        <li><code>{{datetime}}</code> — current ISO 8601 datetime</li>
+        <li><code>{{date}}</code> — current date (YYYY-MM-DD)</li>
+        <li><code>{{time}}</code> — current time (HH:mm:ss)</li>
+        <li><code>{{random}}</code> — random 8-character hex string</li>
+      </ul>
+    `;
+
+    const phListContainer = containerEl.createDiv({ cls: "custom-placeholders-list" });
+    
+    const renderPlaceholders = () => {
+      phListContainer.empty();
+      const placeholders = this.plugin.settings.customPlaceholders || [];
+      
+      for (let pi = 0; pi < placeholders.length; pi++) {
+        const ph = placeholders[pi];
+        const row = phListContainer.createDiv({ cls: "provider-header-row" });
+        row.style.cssText = "display:flex;gap:6px;align-items:center;margin-bottom:6px;";
+        
+        const nameInput = row.createEl("input", { type: "text", placeholder: "Name (e.g. model)", value: ph.name || "" });
+        nameInput.style.cssText = "flex:1;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);";
+        nameInput.addEventListener("input", async () => { ph.name = nameInput.value; await this.plugin.saveSettings(); });
+        
+        const valueInput = row.createEl("input", { type: "text", placeholder: "Value (e.g. gpt-4o)", value: ph.value || "" });
+        valueInput.style.cssText = "flex:2;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);font-family:monospace;";
+        valueInput.addEventListener("input", async () => { ph.value = valueInput.value; await this.plugin.saveSettings(); });
+        
+        const usageHint = row.createEl("span", { text: "{{" + (ph.name || "?") + "}}", cls: "placeholder-usage-hint" });
+        usageHint.style.cssText = "flex-shrink:0;font-size:10px;color:var(--text-muted);font-family:monospace;min-width:80px;text-align:right;";
+        
+        const removeBtn = row.createEl("button", { text: "✕", attr: { "aria-label": "Remove placeholder" } });
+        removeBtn.style.cssText = "padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);color:var(--text-error);flex-shrink:0;";
+        removeBtn.addEventListener("click", async () => { placeholders.splice(pi, 1); await this.plugin.saveSettings(); renderPlaceholders(); });
+      }
+      
+      const addRow = phListContainer.createDiv({ cls: "provider-header-row" });
+      const addBtn = addRow.createEl("button", { text: "+ Add Custom Placeholder" });
+      addBtn.style.cssText = "padding:4px 12px;font-size:11px;cursor:pointer;border:1px dashed var(--background-modifier-border);border-radius:4px;background:transparent;";
+      addBtn.addEventListener("click", async () => {
+        if (!this.plugin.settings.customPlaceholders) this.plugin.settings.customPlaceholders = [];
+        this.plugin.settings.customPlaceholders.push({ name: "", value: "" });
+        await this.plugin.saveSettings();
+        renderPlaceholders();
+      });
+    };
+    renderPlaceholders();
 
     containerEl.createEl("h3", { text: "API Setup Guide" });
     const guide = containerEl.createEl("div");
@@ -2479,9 +3050,288 @@ class HandwritingSettingTab extends PluginSettingTab {
       <p><strong>SimpleTex (Recommended):</strong> Register at <a href="https://simpletex.cn/">simpletex.cn</a>, go to User Center, create a <strong>UAT (User Authorization Token)</strong> in "User Authorization Token" menu. Paste the token here.</p>
       <p><strong>Mathpix:</strong> Get <strong>App ID</strong> and <strong>App Key</strong> at <a href="https://mathpix.com/">mathpix.com</a>. Paste App ID in "Mathpix App ID" and App Key in "API Key". Most accurate for math formulas.</p>
       <p><strong>OpenAI:</strong> Use your OpenAI API key. Supports gpt-4o, gpt-4o-mini, gpt-4.1, etc. Set "detail" to "high" for best formula recognition accuracy.</p>
-      <p><strong>Custom (JSON):</strong> Any API that accepts base64 image and returns JSON with 'latex' field.</p>
-      <p><strong>Custom (Multipart Form):</strong> For APIs that accept multipart/form-data upload (like the example below). Set URL, API key, response field name, header name, and image field name.</p>
+      <p><strong>Custom API Providers:</strong> Use the 🔧 Custom API Providers section above to define your own endpoints. Supports JSON, Form-Data, and Raw body types. Available placeholders: <code>{{image_base64}}</code> (raw base64), <code>{{image}}</code> (data URL), <code>{{prompt}}</code>, <code>{{apiKey}}</code>, <code>{{timestamp}}</code>, <code>{{datetime}}</code>, <code>{{date}}</code>, <code>{{time}}</code>, <code>{{random}}</code>, plus any custom placeholders defined above.</p>
+      <p><strong>Legacy Custom modes</strong> (Custom JSON / Custom Form) are still available for backward compatibility.</p>
     `;
+  }
+  renderCustomProvidersList(listContainer) {
+    listContainer.empty();
+    const providers = this.plugin.settings.customProviders || [];
+    
+    if (providers.length === 0) {
+      listContainer.createEl("p", { text: "No custom providers configured yet. Add one below or import a preset template.", cls: "setting-item-description" });
+      return;
+    }
+
+    for (let i = 0; i < providers.length; i++) {
+      const provider = providers[i];
+      const isExpanded = this._expandedProviders.has(provider.id);
+      
+      const card = listContainer.createDiv({ cls: "custom-provider-card" });
+      card.style.cssText = "border:1px solid var(--background-modifier-border);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--background-secondary);";
+
+      const cardHeader = card.createDiv({ cls: "provider-card-header" });
+      cardHeader.style.cssText = "display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;";
+      
+      const headerLeft = cardHeader.createDiv({ cls: "provider-header-left" });
+      headerLeft.style.cssText = "display:flex;align-items:center;gap:8px;flex:1;min-width:0;";
+      
+      const expandIcon = headerLeft.createEl("span", { text: isExpanded ? "\u25BC" : "\u25B6", cls: "provider-expand-icon" });
+      expandIcon.style.cssText = "font-size:10px;flex-shrink:0;";
+      
+      const nameEl = headerLeft.createEl("strong", { text: provider.name || "Unnamed Provider" });
+      nameEl.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      
+      const methodBadge = headerLeft.createEl("span", { text: provider.method || "POST", cls: "provider-method-badge" });
+      methodBadge.style.cssText = "font-size:10px;padding:2px 6px;border-radius:3px;background:var(--interactive-accent);color:white;flex-shrink:0;";
+
+      const headerActions = cardHeader.createDiv({ cls: "provider-header-actions" });
+      headerActions.style.cssText = "display:flex;gap:4px;flex-shrink:0;margin-left:8px;";
+      
+      const moveUpBtn = headerActions.createEl("button", { text: "\u25B2", attr: { "aria-label": "Move up" } });
+      moveUpBtn.style.cssText = "padding:2px 6px;font-size:10px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:3px;background:var(--background-primary);";
+      moveUpBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (i === 0) return;
+        const list = this.plugin.settings.customProviders;
+        [list[i - 1], list[i]] = [list[i], list[i - 1]];
+        await this.plugin.saveSettings();
+        this.display();
+      });
+      
+      const moveDownBtn = headerActions.createEl("button", { text: "\u25BC", attr: { "aria-label": "Move down" } });
+      moveDownBtn.style.cssText = "padding:2px 6px;font-size:10px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:3px;background:var(--background-primary);";
+      moveDownBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (i === providers.length - 1) return;
+        const list = this.plugin.settings.customProviders;
+        [list[i], list[i + 1]] = [list[i + 1], list[i]];
+        await this.plugin.saveSettings();
+        this.display();
+      });
+      
+      const deleteBtn = headerActions.createEl("button", { text: "\uD83D\uDDD1\uFE0F", attr: { "aria-label": "Delete provider" } });
+      deleteBtn.style.cssText = "padding:2px 6px;font-size:10px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:3px;background:var(--background-primary);color:var(--text-error);";
+      deleteBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete provider "${provider.name}"?`)) {
+          const list = this.plugin.settings.customProviders;
+          list.splice(i, 1);
+          if (this.plugin.settings.apiProvider === provider.id) {
+            this.plugin.settings.apiProvider = "simpletex";
+          }
+          this._expandedProviders.delete(provider.id);
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice(`Provider "${provider.name}" deleted.`);
+        }
+      });
+
+      cardHeader.addEventListener("click", () => {
+        if (isExpanded) {
+          this._expandedProviders.delete(provider.id);
+        } else {
+          this._expandedProviders.add(provider.id);
+        }
+        this.display();
+      });
+
+      if (isExpanded) {
+        const cardBody = card.createDiv({ cls: "provider-card-body" });
+        cardBody.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid var(--background-modifier-border);";
+        
+        new Setting(cardBody)
+          .setName("Provider Name")
+          .setDesc("Display name shown in the API provider dropdown")
+          .addText((text) => text.setPlaceholder("My Custom API").setValue(provider.name || "")
+            .onChange(async (value) => { provider.name = value; await this.plugin.saveSettings(); }));
+
+        new Setting(cardBody)
+          .setName("Request Method")
+          .setDesc("HTTP method for the API request")
+          .addDropdown((dropdown) => dropdown
+            .addOption("GET", "GET")
+            .addOption("POST", "POST")
+            .addOption("PUT", "PUT")
+            .addOption("DELETE", "DELETE")
+            .addOption("PATCH", "PATCH")
+            .setValue(provider.method || "POST")
+            .onChange(async (value) => { provider.method = value; await this.plugin.saveSettings(); }));
+
+        new Setting(cardBody)
+          .setName("Request URL")
+          .setDesc("API endpoint URL. Supports {{apiKey}} placeholder which will be replaced with the API Key field value.")
+          .addText((text) => text.setPlaceholder("https://api.example.com/recognize").setValue(provider.url || "")
+            .onChange(async (value) => { provider.url = value; await this.plugin.saveSettings(); }));
+
+        new Setting(cardBody)
+          .setName("Body Type")
+          .setDesc("Format of the request body")
+          .addDropdown((dropdown) => dropdown
+            .addOption("json", "JSON")
+            .addOption("form-data", "Form-Data (multipart)")
+            .addOption("raw", "Raw Text")
+            .setValue(provider.bodyType || "json")
+            .onChange(async (value) => { provider.bodyType = value; await this.plugin.saveSettings(); this.display(); }));
+
+        if (provider.bodyType === "form-data") {
+          new Setting(cardBody)
+            .setName("Image Form Field Name")
+            .setDesc("The form field name for the uploaded image (e.g. 'image', 'file')")
+            .addText((text) => text.setPlaceholder("image").setValue(provider.formFieldName || "image")
+              .onChange(async (value) => { provider.formFieldName = value; await this.plugin.saveSettings(); }));
+
+
+          // Optional bodyTemplate for form-data: parsed as JSON to auto-generate form fields
+          new Setting(cardBody)
+            .setName("Body Template (optional)")
+            .setDesc("Optional JSON template. Each key becomes a form field (values support {{prompt}}, {{apiKey}}, {{image}}, {{image_base64}}). Merged with Additional Form Fields below.")
+            .addTextArea((text) => {
+              text.setPlaceholder('{"prompt": "{{prompt}}", "model": "my-model"}');
+              text.setValue(provider.bodyTemplate || "");
+              text.inputEl.style.cssText = "font-family:monospace;font-size:12px;min-height:60px;";
+              text.onChange(async (value) => { provider.bodyTemplate = value; await this.plugin.saveSettings(); });
+            });
+
+          // Additional form fields
+          const formFieldsSection = cardBody.createDiv({ cls: "provider-formfields-section" });
+          formFieldsSection.createEl("h4", { text: "Additional Form Fields" });
+          formFieldsSection.createEl("p", { text: "Add extra form-data fields (e.g. prompt, model). Values support {{prompt}}, {{apiKey}} placeholders.", cls: "setting-item-description" });
+          
+          const formFieldsList = formFieldsSection.createDiv({ cls: "provider-formfields-list" });
+          const renderFormFields = () => {
+            formFieldsList.empty();
+            const fields = provider.formFields || [];
+            for (let fi = 0; fi < fields.length; fi++) {
+              const field = fields[fi];
+              const row = formFieldsList.createDiv({ cls: "provider-header-row" });
+              row.style.cssText = "display:flex;gap:6px;align-items:center;margin-bottom:6px;";
+              
+              const nameInput = row.createEl("input", { type: "text", placeholder: "Field Name", value: field.name || "" });
+              nameInput.style.cssText = "flex:1;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);";
+              nameInput.addEventListener("input", async () => { field.name = nameInput.value; await this.plugin.saveSettings(); });
+              
+              const valueInput = row.createEl("input", { type: "text", placeholder: "Field Value", value: field.value || "" });
+              valueInput.style.cssText = "flex:2;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);font-family:monospace;";
+              valueInput.addEventListener("input", async () => { field.value = valueInput.value; await this.plugin.saveSettings(); });
+              
+              const removeBtn = row.createEl("button", { text: "\u2715", attr: { "aria-label": "Remove field" } });
+              removeBtn.style.cssText = "padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);color:var(--text-error);flex-shrink:0;";
+              removeBtn.addEventListener("click", async () => { fields.splice(fi, 1); await this.plugin.saveSettings(); renderFormFields(); });
+            }
+            
+            const addRow = formFieldsList.createDiv({ cls: "provider-header-row" });
+            const addBtn = addRow.createEl("button", { text: "+ Add Form Field" });
+            addBtn.style.cssText = "padding:4px 12px;font-size:11px;cursor:pointer;border:1px dashed var(--background-modifier-border);border-radius:4px;background:transparent;";
+            addBtn.addEventListener("click", async () => {
+              if (!provider.formFields) provider.formFields = [];
+              provider.formFields.push({ name: "", value: "" });
+              await this.plugin.saveSettings();
+              renderFormFields();
+            });
+          };
+          renderFormFields();
+        }
+        if (provider.bodyType === "json" || provider.bodyType === "raw") {
+          new Setting(cardBody)
+            .setName("Body Template")
+            .setDesc("Template with placeholders: {{image_base64}} (raw base64), {{image}} (data:image/png;base64,...), {{prompt}} (custom prompt), {{apiKey}} (API key).")
+            .addTextArea((text) => {
+              text.setPlaceholder('{"image": "{{image}}", "prompt": "{{prompt}}"}');
+              text.setValue(provider.bodyTemplate || "");
+              text.inputEl.style.cssText = "font-family:monospace;font-size:12px;min-height:100px;";
+              text.onChange(async (value) => { provider.bodyTemplate = value; await this.plugin.saveSettings(); });
+            });
+        }
+
+        const headersSection = cardBody.createDiv({ cls: "provider-headers-section" });
+        headersSection.createEl("h4", { text: "Request Headers" });
+        headersSection.createEl("p", { text: "Header values support {{apiKey}} placeholder. Content-Type is set automatically for JSON and Form-Data unless overridden.", cls: "setting-item-description" });
+        
+        const headersList = headersSection.createDiv({ cls: "provider-headers-list" });
+        const renderHeaders = () => {
+          headersList.empty();
+          const headers = provider.headers || [];
+          for (let hi = 0; hi < headers.length; hi++) {
+            const header = headers[hi];
+            const row = headersList.createDiv({ cls: "provider-header-row" });
+            row.style.cssText = "display:flex;gap:6px;align-items:center;margin-bottom:6px;";
+            
+            const keyInput = row.createEl("input", { type: "text", placeholder: "Header Name", value: header.key || "" });
+            keyInput.style.cssText = "flex:1;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);";
+            keyInput.addEventListener("input", async () => { header.key = keyInput.value; await this.plugin.saveSettings(); });
+            
+            const valueInput = row.createEl("input", { type: "text", placeholder: "Header Value", value: header.value || "" });
+            valueInput.style.cssText = "flex:2;min-width:0;padding:4px 8px;font-size:12px;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);font-family:monospace;";
+            valueInput.addEventListener("input", async () => { header.value = valueInput.value; await this.plugin.saveSettings(); });
+            
+            const removeBtn = row.createEl("button", { text: "\u2715", attr: { "aria-label": "Remove header" } });
+            removeBtn.style.cssText = "padding:2px 8px;font-size:12px;cursor:pointer;border:1px solid var(--background-modifier-border);border-radius:4px;background:var(--background-primary);color:var(--text-error);flex-shrink:0;";
+            removeBtn.addEventListener("click", async () => { headers.splice(hi, 1); await this.plugin.saveSettings(); renderHeaders(); });
+          }
+          
+          const addRow = headersList.createDiv({ cls: "provider-header-row" });
+          const addBtn = addRow.createEl("button", { text: "+ Add Header" });
+          addBtn.style.cssText = "padding:4px 12px;font-size:11px;cursor:pointer;border:1px dashed var(--background-modifier-border);border-radius:4px;background:transparent;";
+          addBtn.addEventListener("click", async () => {
+            if (!provider.headers) provider.headers = [];
+            provider.headers.push({ key: "", value: "" });
+            await this.plugin.saveSettings();
+            renderHeaders();
+          });
+        };
+        renderHeaders();
+
+        new Setting(cardBody)
+          .setName("Response Type")
+          .setDesc("How to parse the API response")
+          .addDropdown((dropdown) => dropdown
+            .addOption("json", "JSON (use path below)")
+            .addOption("regex", "Text (use regex below)")
+            .setValue(provider.responseType || "json")
+            .onChange(async (value) => { provider.responseType = value; await this.plugin.saveSettings(); this.display(); }));
+
+        if (provider.responseType === "json") {
+          new Setting(cardBody)
+            .setName("Response JSON Path")
+            .setDesc("Dot-path (e.g. data.latex) or JSONPath (e.g. $.choices.0.message.content). Supports array index like items.0.name.")
+            .addText((text) => text.setPlaceholder("data.latex").setValue(provider.responsePath || "")
+              .onChange(async (value) => { provider.responsePath = value; await this.plugin.saveSettings(); }));
+        }
+
+        if (provider.responseType === "regex") {
+          new Setting(cardBody)
+            .setName("Response Regex")
+            .setDesc("Regular expression with a capture group to extract LaTeX. The first capture group is used, or the full match if no group.")
+            .addText((text) => {
+              text.setPlaceholder("\\\\begin\\{document\\}([\\\\s\\\\S]*?)\\\\end\\{document\\}");
+              text.setValue(provider.responseRegex || "");
+              text.inputEl.style.cssText = "font-family:monospace;font-size:12px;";
+              text.onChange(async (value) => { provider.responseRegex = value; await this.plugin.saveSettings(); });
+            });
+        }
+
+        new Setting(cardBody)
+          .setName("Error Path (optional)")
+          .setDesc("Dot-path to extract error message from error responses (e.g. error.message). Leave blank for default error handling.")
+          .addText((text) => text.setPlaceholder("error.message").setValue(provider.errorPath || "")
+            .onChange(async (value) => { provider.errorPath = value; await this.plugin.saveSettings(); }));
+
+        new Setting(cardBody)
+          .setName("Duplicate Provider")
+          .setDesc("Create a copy of this provider configuration")
+          .addButton((btn) => btn.setButtonText("\uD83D\DCCB Duplicate").onClick(async () => {
+            const list = this.plugin.settings.customProviders;
+            const clone = JSON.parse(JSON.stringify(provider));
+            clone.id = "custom_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+            clone.name = (clone.name || "Provider") + " (Copy)";
+            list.splice(i + 1, 0, clone);
+            await this.plugin.saveSettings();
+            this.display();
+            new Notice(`Provider "${clone.name}" duplicated.`);
+          }));
+      }
+    }
   }
 }
 
